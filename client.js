@@ -71,6 +71,9 @@ window.__ModuleLoader__.load({
 --dsw-alias-state-warn-label:var(--dsw-static-amber-600);
 --sk-up:${PALETTE.light.up};--sk-down:${PALETTE.light.down};--sk-flat:${PALETTE.light.flat};
 }
+/* 自动模式（默认）：涨跌语义色跟随 DSH 明暗翻转（其余配色走 DSH 令牌）。 */
+.sk-theme-auto{--sk-up:${PALETTE.light.up};--sk-down:${PALETTE.light.down};--sk-flat:${PALETTE.light.flat}}
+body[data-ds-dark-theme] .sk-theme-auto{--sk-up:${PALETTE.dark.up};--sk-down:${PALETTE.dark.down};--sk-flat:${PALETTE.dark.flat}}
 .sk-pill{position:fixed;top:14px;right:16px;z-index:9999;display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:var(--dsw-radius-md);background:var(--dsw-menu-surface-fill);border:0;color:var(--dsw-alias-label-primary);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);cursor:pointer;user-select:none;font-family:var(--dsw-font-family);font-size:12px;line-height:1.4;box-shadow:var(--dsw-elevation-panel);backdrop-filter:var(--dsw-menu-backdrop-filter);pointer-events:auto}
 .sk-pill:hover{border-color:var(--dsw-alias-state-business-primary)}
 .sk-pill-summary{display:inline-flex;gap:6px;font-weight:600}
@@ -213,6 +216,7 @@ window.__ModuleLoader__.load({
     ];
     const POS_KEY = "stocking.pos.v1";
     const SIZE_KEY = "stocking.size.v1";
+    const THEME_KEY = "stocking.theme.v1";
     // 内置提示词（保持不变，规范原文；{name}/{code} 为占位符）。
     // 实际发送使用简短消息「分析{name}（code）」；技能调用指令由 host 端注入的条件式系统提示保证。
     const BUILTIN_ANALYZE_PROMPT = "使用技能 investment-research 分析下{name}（{code}）这家公司，再使用技能 frontend-design 生成一个网站";
@@ -232,6 +236,7 @@ window.__ModuleLoader__.load({
       dark: { 5: "#cfd3d6", 10: "#f7ad31", 20: "#5686fe", 60: "#35c46a" },
     };
     const MA_STORAGE_KEY = "stocking.ma.v1";
+    const THEME_LABEL = { auto: "自动", light: "浅色", dark: "深色" };
 
     // 内联 SVG 图标表：16×16、currentColor、1 描边，图形取自 DSH 图标集
     //（packages/client/ui-primitives/src/icons，MIT），与 DSH 的界面图标语言保持一致。
@@ -916,7 +921,15 @@ window.__ModuleLoader__.load({
       const [groupIndex, setGroupIndex] = useState(0);
       const [view, setView] = useState(null);
       const [period, setPeriod] = useState("minute");
-      const [theme, setTheme] = useState("dark");
+      // 主题：auto 跟随 DSH，light/dark 为插件内的强制覆盖；默认 auto。
+      const [theme, setTheme] = useState(() => {
+        try {
+          const v = window.localStorage.getItem(THEME_KEY);
+          return v === "light" || v === "dark" ? v : "auto";
+        } catch { return "auto"; }
+      });
+      // DSH 当前是否暗色（body 上的 data-ds-dark-theme），切换时同步
+      const [dsDark, setDsDark] = useState(() => document.body.hasAttribute("data-ds-dark-theme"));
       const [groupsCfg, setGroupsCfg] = useState(null);
       const [data, setData] = useState(null);
       const [kline, setKline] = useState(null);
@@ -1493,6 +1506,22 @@ window.__ModuleLoader__.load({
         } catch { /* ignore */ }
       }, [maVisible]);
 
+      // 跟随 DSH 主题：auto 模式下按 body 上的暗色标记取色，DSH 切换时同步重渲染
+      useEffect(() => {
+        const sync = () => setDsDark(document.body.hasAttribute("data-ds-dark-theme"));
+        sync();
+        const observer = new MutationObserver(sync);
+        observer.observe(document.body, { attributes: true, attributeFilter: ["data-ds-dark-theme"] });
+        return () => observer.disconnect();
+      }, []);
+
+      // 主题选择 → 持久化
+      useEffect(() => {
+        try {
+          window.localStorage.setItem(THEME_KEY, theme);
+        } catch { /* ignore */ }
+      }, [theme]);
+
       // 股票搜索（防抖 200ms，调 Host /stocks 全 A 股池）
       useEffect(() => {
         if (showAdd !== "stock") return undefined;
@@ -1628,9 +1657,9 @@ window.__ModuleLoader__.load({
 
       const themeToggle = react.createElement("button", {
         className: "sk-icon",
-        onClick: () => setTheme((t) => (t === "dark" ? "light" : "dark")),
-        title: theme === "dark" ? "切换到浅色主题" : "切换到暗色主题",
-      }, icon(theme === "dark" ? "light" : "dark"));
+        onClick: () => setTheme((t) => (t === "auto" ? "light" : (t === "light" ? "dark" : "auto"))),
+        title: "主题：" + THEME_LABEL[theme] + "（自动跟随 DSH / 浅色 / 深色）",
+      }, icon(theme === "auto" ? "followsystem" : (theme === "light" ? "light" : "dark")));
 
       // 状态文案：有实时数据给更新时间，否则给失败/加载状态
       const liveText = data && data.live
@@ -1742,7 +1771,7 @@ window.__ModuleLoader__.load({
         const isUp = row ? (row.live ? row.changePercent >= 0 : false) : false;
         const color = row && row.live ? (isUp ? UP : DOWN) : FLAT;
         const trig = row ? triggerMeta(row.trigger) : null;
-        const dark = theme === "dark";
+        const dark = theme === "dark" || (theme === "auto" && dsDark);
         const chartEl = isMinute
           ? (lwc
               ? react.createElement(MinuteChart, { lwc, points: m && Array.isArray(m.points) ? m.points : [], prevClose: m ? m.prevClose : null, height: 240, dark, fitKey: view.code + ":minute", fill: !!size })
