@@ -276,6 +276,8 @@ body[data-ds-dark-theme] .sk-theme-auto{--sk-up:${PALETTE.dark.up};--sk-down:${P
     }
 
 
+/** 本插件自带的 agent 预设 id：三段提示词由该预设注入，其它会话不受影响。 */
+const ANALYSIS_PRESET_ID = "stock-analyst";
     function maColor(p, dark) {
       return MA_COLOR[dark ? "dark" : "light"][p] || PALETTE[dark ? "dark" : "light"].warn;
     }
@@ -1117,15 +1119,32 @@ body[data-ds-dark-theme] .sk-theme-auto{--sk-up:${PALETTE.dark.up};--sk-down:${P
             const cur = (sessions && sessions.byId) ? sessions.byId[curId] : null;
             if (cur && cur.cwd) createPayload = { cwd: cur.cwd };
           }
-          const created = await api.sessions.create(createPayload);
+          // 1) 创建新会话：带上本插件自带的 agent 预设（提示词只在该预设的会话里注入）
+          let created = null;
+          try {
+            created = await api.sessions.create(Object.assign({}, createPayload, { agentPreset: ANALYSIS_PRESET_ID }));
+          } catch {
+            created = null; // 旧版 DSH 可能不认识 agentPreset：退回普通新建
+          }
+          if (!created) created = await api.sessions.create(createPayload);
           if (!(created && created.result && created.result.ok)) throw new Error("创建新会话失败");
-          const sessionId = created.result.value && created.result.value.sessionId;
+          const createdValue = created.result.value || {};
+          const sessionId = createdValue.sessionId;
           if (!sessionId) throw new Error("session.create 未返回 sessionId");
+          // 预设未生效（预设未注册或 DSH 不支持）→ 由 host 给出兜底全文，消息里直接带上框架
+          const presetBound = createdValue.agentPreset === ANALYSIS_PRESET_ID;
+          let payloadText = text;
+          if (!presetBound) {
+            try {
+              const fb = await api("/preset", { text });
+              if (fb && typeof fb.fallback === "string" && fb.fallback) payloadText = fb.fallback;
+            } catch { /* 兜底失败则保持原文 */ }
+          }
           // 2) 向新会话发送提示词（排队执行）
           const res = await api.sessions.prompt({
             sessionId,
             mode: "queue",
-            content: [{ type: "text", text }],
+            content: [{ type: "text", text: payloadText }],
           });
           const accepted = !!(res && res.result && res.result.ok && res.result.value && res.result.value.accepted);
           // 3) 跳到新对话；跳转失败如实提示（消息已发送，去会话列表查看）
